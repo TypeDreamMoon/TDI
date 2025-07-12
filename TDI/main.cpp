@@ -24,7 +24,7 @@ static bool    g_iconsVisible      = true;
 static DWORD   g_lastClickTime     = 0;
 static POINT   g_lastClickPos      = {0, 0};
 
-static HWND    g_hWnd              = nullptr;  // 隐藏消息窗口，用于托盘
+static HWND    g_hWnd              = nullptr;  // 托盘消息窗口
 
 // 托盘消息 & 菜单命令 ID
 const UINT WM_TRAYICON    = WM_APP + 1;
@@ -41,19 +41,18 @@ void InitDesktopData();
 void ToggleDesktopIcons();
 void RestoreDesktopIcons();
 bool InitTrayIcon(HINSTANCE);
+static void __cdecl OnExitCleanup();  // __cdecl for atexit
 
 // -----------------------------------------------------------------------------
-// 初始化并缓存桌面视图句柄、双击参数、区域
+// 缓存桌面视图 & 双击参数 & 区域
 // -----------------------------------------------------------------------------
 void InitDesktopData()
 {
     HWND hProgman = FindWindow(L"Progman", nullptr);
     if (!hProgman) return;
 
-    // 先找 SHELLDLL_DefView
     HWND hDefView = FindWindowEx(hProgman, nullptr, L"SHELLDLL_DefView", nullptr);
     if (!hDefView) {
-        // Win8+ 可能在 WorkerW
         HWND hWorker = nullptr;
         while ((hWorker = FindWindowEx(nullptr, hWorker, L"WorkerW", nullptr))) {
             hDefView = FindWindowEx(hWorker, nullptr, L"SHELLDLL_DefView", nullptr);
@@ -61,23 +60,17 @@ void InitDesktopData()
         }
     }
     if (!hDefView) return;
-
     g_hDesktopDefView = hDefView;
 
-    // 再找 SysListView32（图标列表）
     HWND hList = FindWindowEx(hDefView, nullptr, L"SysListView32", nullptr);
     if (!hList) return;
-
     g_hDesktopListView = hList;
 
-    // 缓存系统双击参数
     g_doubleClickTime = GetDoubleClickTime();
     g_cxDoubleClk     = GetSystemMetrics(SM_CXDOUBLECLK);
     g_cyDoubleClk     = GetSystemMetrics(SM_CYDOUBLECLK);
 
-    // 缓存桌面图标列表的屏幕坐标
     if (!GetWindowRect(hList, &g_desktopRect)) {
-        // 退而求其次，用全屏
         g_desktopRect.left   = 0;
         g_desktopRect.top    = 0;
         g_desktopRect.right  = GetSystemMetrics(SM_CXSCREEN);
@@ -91,18 +84,17 @@ void InitDesktopData()
 void ToggleDesktopIcons()
 {
     if (!g_hDesktopListView) return;
-    ::ShowWindow(g_hDesktopListView,
-                 g_iconsVisible ? SW_HIDE : SW_SHOW);
+    ShowWindow(g_hDesktopListView, g_iconsVisible ? SW_HIDE : SW_SHOW);
     g_iconsVisible = !g_iconsVisible;
 }
 
 // -----------------------------------------------------------------------------
-// 退出时：恢复图标 & 删除托盘图标
+// 退出时恢复图标 & 删除托盘
 // -----------------------------------------------------------------------------
 void RestoreDesktopIcons()
 {
     if (g_hDesktopListView && !g_iconsVisible) {
-        ::ShowWindow(g_hDesktopListView, SW_SHOW);
+        ShowWindow(g_hDesktopListView, SW_SHOW);
         g_iconsVisible = true;
     }
     if (g_hWnd) {
@@ -115,7 +107,16 @@ void RestoreDesktopIcons()
 }
 
 // -----------------------------------------------------------------------------
-// 创建 & 添加托盘图标
+// 退出回调 (必须 __cdecl)
+// -----------------------------------------------------------------------------
+static void __cdecl OnExitCleanup()
+{
+    RestoreDesktopIcons();
+    CoUninitialize();
+}
+
+// -----------------------------------------------------------------------------
+// 初始化托盘图标
 // -----------------------------------------------------------------------------
 bool InitTrayIcon(HINSTANCE hInstance)
 {
@@ -131,20 +132,17 @@ bool InitTrayIcon(HINSTANCE hInstance)
 }
 
 // -----------------------------------------------------------------------------
-// 托盘图标消息处理
+// 托盘消息窗口过程
 // -----------------------------------------------------------------------------
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     if (msg == WM_TRAYICON && wParam == ID_TRAY_ICON) {
         if (lParam == WM_LBUTTONDBLCLK) {
-            // 托盘双击也切换
             ToggleDesktopIcons();
         }
         else if (lParam == WM_RBUTTONUP) {
             POINT pt; GetCursorPos(&pt);
             HMENU hMenu = CreatePopupMenu();
-
-            // 第一项：根据当前状态显示文字
             if (g_iconsVisible) {
                 InsertMenu(hMenu, 0, MF_BYPOSITION | MF_STRING,
                            ID_TRAY_TOGGLE, L"隐藏桌面图标");
@@ -152,11 +150,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 InsertMenu(hMenu, 0, MF_BYPOSITION | MF_STRING,
                            ID_TRAY_TOGGLE, L"显示桌面图标");
             }
-            // 第二项：退出
             InsertMenu(hMenu, 1, MF_BYPOSITION | MF_STRING,
                        ID_TRAY_EXIT, L"退出");
-
-            SetForegroundWindow(hWnd);  // 保证菜单弹出后能正确关闭
+            SetForegroundWindow(hWnd);
             TrackPopupMenu(hMenu,
                            TPM_BOTTOMALIGN | TPM_LEFTALIGN,
                            pt.x, pt.y, 0, hWnd, nullptr);
@@ -182,17 +178,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 }
 
 // -----------------------------------------------------------------------------
-// 低级鼠标钩子：仅桌面双击空白切换，其它全部放行
+// 低级鼠标钩子：仅桌面空白双击切换，其它放行
 // -----------------------------------------------------------------------------
 LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
-    if (nCode == HC_ACTION
-     && wParam == WM_LBUTTONDOWN
-     && g_hDesktopListView)
-    {
+    if (nCode == HC_ACTION && wParam == WM_LBUTTONDOWN && g_hDesktopListView) {
         auto pInfo = reinterpret_cast<MSLLHOOKSTRUCT*>(lParam);
 
-        // —— 双击检测 —— 
         DWORD now = GetTickCount();
         int dx = abs(pInfo->pt.x - g_lastClickPos.x);
         int dy = abs(pInfo->pt.y - g_lastClickPos.y);
@@ -201,27 +193,22 @@ LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam)
                      && (dy < g_cyDoubleClk);
         g_lastClickTime = now;
         g_lastClickPos  = pInfo->pt;
-        if (!isDouble) {
+        if (!isDouble)
             return CallNextHookEx(g_hHook, nCode, wParam, lParam);
-        }
 
-        // —— 只对真正的“桌面”视图处理 —— 
         HWND hUnder = WindowFromPoint(pInfo->pt);
         if (hUnder != g_hDesktopListView
          && hUnder != g_hDesktopDefView)
         {
-            // 双击在其他窗口上，一律放行
             return CallNextHookEx(g_hHook, nCode, wParam, lParam);
         }
 
-        // —— MSAA 空白检测 —— 
         IAccessible* pAcc = nullptr;
         VARIANT varChild; VariantInit(&varChild);
         bool hitIcon = false;
         if (SUCCEEDED(AccessibleObjectFromPoint(
                 pInfo->pt, &pAcc, &varChild)) && pAcc)
         {
-            // CHILDID_SELF 代表背景；其它值代表点击在某个图标上
             if (varChild.vt == VT_I4 && varChild.lVal != CHILDID_SELF) {
                 hitIcon = true;
             }
@@ -230,16 +217,14 @@ LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam)
         }
 
         if (!hitIcon) {
-            // 真正双击空白：切换隐藏/显示
             ToggleDesktopIcons();
         }
     }
-
     return CallNextHookEx(g_hHook, nCode, wParam, lParam);
 }
 
 // -----------------------------------------------------------------------------
-// Console 子系统时从 main 转到 wWinMain，GUI 则直接用 wWinMain
+// Console 转 GUI；GUI 主入口
 // -----------------------------------------------------------------------------
 #ifdef _CONSOLE
 int main()
@@ -256,14 +241,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance,
                       LPWSTR,
                       int)
 {
-    // 1) 初始化 COM（MSAA 依赖）
+    // 初始化 COM & 注册退出回调
     CoInitialize(nullptr);
-    atexit(CoUninitialize);
+    atexit(OnExitCleanup);
 
-    // 2) 退出时自动还原 & 清托盘
-    atexit(RestoreDesktopIcons);
-
-    // 3) 缓存桌面视图数据
+    // 缓存桌面数据
     InitDesktopData();
     if (!g_hDesktopListView) {
         MessageBox(nullptr,
@@ -273,7 +255,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance,
         return 1;
     }
 
-    // 4) 注册后台消息窗口（用于托盘交互）
+    // 注册后台消息窗口（托盘用）
     WNDCLASSEX wc = { sizeof(wc) };
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInstance;
@@ -296,7 +278,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance,
         return 1;
     }
 
-    // 5) 添加托盘图标
+    // 添加托盘图标
     if (!InitTrayIcon(hInstance)) {
         MessageBox(nullptr,
                    L"托盘图标初始化失败。",
@@ -304,7 +286,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance,
                    MB_ICONWARNING);
     }
 
-    // 6) 安装低级鼠标钩子（需管理员权限）
+    // 安装全局钩子（需管理员权限）
     g_hHook = SetWindowsHookEx(WH_MOUSE_LL,
                                LowLevelMouseProc,
                                nullptr,
@@ -317,17 +299,17 @@ int APIENTRY wWinMain(HINSTANCE hInstance,
         return 1;
     }
 
-    // 7) 隐藏控制台（如果有）
+    // 隐藏可能存在的控制台窗口
     ShowWindow(GetConsoleWindow(), SW_HIDE);
 
-    // 8) 消息循环
+    // 消息循环
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
 
-    // 9) 卸钩 & 退出
+    // 卸钩 & 程序结束
     UnhookWindowsHookEx(g_hHook);
     return 0;
 }

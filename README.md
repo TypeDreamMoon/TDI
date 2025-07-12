@@ -1,6 +1,6 @@
 # Toggle Desktop Icons / 桌面图标切换器
 
-Support Platforms : Windows
+Support Platforms : Windows x64 x86
 
 EN : Toggle Desktop Icons is a simple Windows utility that allows you to quickly hide or show all icons on your desktop. It's designed to be used with a keyboard shortcut or a desktop icon, making it easy to toggle the visibility of your desktop icons whenever you need to.
 
